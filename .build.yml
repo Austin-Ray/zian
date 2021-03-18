@@ -34,3 +34,6 @@ tasks:
         export VCS_PULL_REQUEST="$GITHUB_PR_NUMBER"
         bash <(curl -s https://codecov.io/bash) -f lcov.info
       fi
+  - qa: |
+      cd $REPO
+      cargo clippy -- -D warnings
