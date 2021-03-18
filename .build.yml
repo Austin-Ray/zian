@@ -1,0 +1,15 @@
+image: archlinux
+packages:
+  - rustup
+sources:
+  - https://github.com/Austin-Ray/zian
+environment:
+  REPO: zian
+tasks:
+  - setup: |
+      cd $REPO
+      rustup default nightly
+  - build: |
+      cd $REPO
+      cargo build --verbose
+
