@@ -15,7 +15,14 @@
 /// You should have received a copy of the GNU Affero General Public License
 /// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 ///
-fn main() {
+use actix_web::{App, HttpServer};
+use zian::{
+    github_pull_request_webhook, hello_world, AppConfig, GitHubPullRequestChecker,
+    IGitHubPullRequestClient,
+};
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
     // Webhook Control flow
     // ------------
     // 1. Pull request event comes from GitHub
@@ -40,5 +47,18 @@ fn main() {
     //    - GITHUB_HEAD_REPO
     // 7. Set source to PR branch
     // 8. Submit build to builds.sr.ht using personal access token (temporary measure.)
-    println!("Hello, world!");
+    HttpServer::new(|| {
+        App::new()
+            .data(AppConfig {
+                github_secret: "example-secret".to_string(),
+                pr_checker: Box::new(GitHubPullRequestChecker {
+                    github_client: Box::new(IGitHubPullRequestClient {}),
+                }),
+            })
+            .service(hello_world)
+            .service(github_pull_request_webhook)
+    })
+    .bind("127.0.0.1:8080")?
+    .run()
+    .await
 }
