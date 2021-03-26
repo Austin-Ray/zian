@@ -15,11 +15,15 @@
 /// You should have received a copy of the GNU Affero General Public License
 /// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 ///
+pub mod services;
+
 use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder};
 use async_trait::async_trait;
 use hmac::{Hmac, Mac, NewMac};
 use serde::{Deserialize, Serialize};
+use services::srchut::SrcHutClient;
 use sha2::Sha256;
+use thiserror::Error;
 
 /// Webhook's `pull_request.head.repo` field
 #[derive(Deserialize, Serialize, Debug)]
@@ -32,6 +36,7 @@ pub struct GitHubRepo {
 #[derive(Deserialize, Serialize, Debug)]
 pub struct GitHubRepoMeta {
     /// Nested meta data without any user information.
+    pub sha: String,
     pub repo: GitHubRepo,
 }
 
@@ -76,7 +81,7 @@ pub struct GitHubFile {
 pub struct AppConfig {
     /// Webhook secret in GitHub.
     pub github_secret: String,
-    pub pr_checker: Box<dyn PullRequestChecker>,
+    pub dispatcher: Box<dyn DispatcherService>,
 }
 
 /// Client for interacting with GitHub's pull request REST API.
@@ -100,29 +105,6 @@ impl GitHubPullRequestClient for IGitHubPullRequestClient {
     }
 }
 
-#[async_trait]
-pub trait PullRequestChecker {
-    /// Check a PR at a provided [url] for forbidden modifications.
-    async fn is_safe_pull_request(&self, url: &str) -> Result<bool, Box<dyn std::error::Error>>;
-}
-
-pub struct GitHubPullRequestChecker {
-    pub github_client: Box<dyn GitHubPullRequestClient + Send + Sync>,
-}
-
-#[async_trait]
-impl PullRequestChecker for GitHubPullRequestChecker {
-    async fn is_safe_pull_request(&self, url: &str) -> Result<bool, Box<dyn std::error::Error>> {
-        // Found a forbidden file.
-        Ok(self
-            .github_client
-            .files(url)
-            .await?
-            .iter()
-            .any(|x| !is_safe_file(&x.filename)))
-    }
-}
-
 fn verify_signature_sha256(
     secret: &str,
     payload: &str,
@@ -139,6 +121,34 @@ fn verify_signature_sha256(
 
 fn is_safe_file(filename: &str) -> bool {
     filename == ".build.yml" || filename.starts_with(".builds/")
+}
+
+#[derive(Serialize, Deserialize)]
+struct GitHubRepoFile {
+    content: String,
+    encoding: String,
+}
+
+async fn grab_build_file_content(
+    repo_name: &str,
+    git_sha: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let build_file = ".build.yml";
+    let mut build_file_content = vec![];
+
+    let req_url = format!(
+        "https://api.github.com/repos/{}/contents/{}?ref={}",
+        repo_name, build_file, git_sha
+    );
+
+    let content = reqwest::get(req_url)
+        .await?
+        .json::<GitHubRepoFile>()
+        .await?;
+
+    build_file_content.push(String::from_utf8(base64::decode(content.content)?)?);
+
+    Ok(build_file_content)
 }
 
 #[post("/github/pull_request")]
@@ -174,18 +184,11 @@ pub async fn github_pull_request_webhook(
         return HttpResponse::Forbidden().body("Invalid signature.");
     }
 
-    // TODO: Refactor this nastiness.
-    let pr_checker = &config.pr_checker;
-    match pr_checker
-        .is_safe_pull_request(&payload.pull_request.url)
-        .await
-    {
-        Ok(valid) => {
-            if !valid {
-                return HttpResponse::Forbidden().body("Pull request can expose secrets!");
-            }
-        }
-        Err(_) => return HttpResponse::InternalServerError().finish(),
+    if let Err(e) = config.dispatcher.dispatch_pull_request(&payload).await {
+        return match e {
+            DispatcherErr::NotSafe => HttpResponse::Forbidden().body(format!("{}", e)),
+            DispatcherErr::Unrecoverable => HttpResponse::InternalServerError().finish(),
+        };
     }
 
     HttpResponse::Ok().finish()
@@ -194,4 +197,70 @@ pub async fn github_pull_request_webhook(
 #[get("/")]
 async fn hello_world() -> impl Responder {
     "hello, world!"
+}
+
+#[derive(Error, Debug)]
+pub enum DispatcherErr {
+    #[error("Pull request may expose secrets.")]
+    NotSafe,
+    #[error("")]
+    Unrecoverable,
+}
+
+#[async_trait]
+pub trait DispatcherService {
+    async fn dispatch_pull_request(
+        &self,
+        webhook: &GitHubPullRequestWebhook,
+    ) -> Result<(), DispatcherErr>;
+}
+
+pub struct IDispatcherService {
+    pub github_client: Box<dyn GitHubPullRequestClient + Send + Sync>,
+    pub srchut_client: Box<dyn SrcHutClient + Send + Sync>,
+}
+
+impl IDispatcherService {
+    async fn is_safe_pull_request(&self, url: &str) -> Result<bool, Box<dyn std::error::Error>> {
+        // Found a forbidden file.
+        Ok(self
+            .github_client
+            .files(url)
+            .await?
+            .iter()
+            .any(|x| !is_safe_file(&x.filename)))
+    }
+}
+
+#[async_trait]
+impl DispatcherService for IDispatcherService {
+    async fn dispatch_pull_request(
+        &self,
+        webhook: &GitHubPullRequestWebhook,
+    ) -> Result<(), DispatcherErr> {
+        let shc = &self.srchut_client;
+
+        let is_safe: bool = self
+            .is_safe_pull_request(&webhook.pull_request.url)
+            .await
+            .map_err(|_| DispatcherErr::Unrecoverable)?;
+
+        if !is_safe {
+            return Err(DispatcherErr::NotSafe);
+        }
+
+        let head_repo = &webhook.pull_request.head;
+
+        let build_files_content =
+            match grab_build_file_content(&head_repo.repo.full_name, &head_repo.sha).await {
+                Ok(content) => content,
+                Err(_) => return Err(DispatcherErr::Unrecoverable),
+            };
+
+        shc.submit_builds(&build_files_content)
+            .await
+            .map_err(|_| DispatcherErr::Unrecoverable)?;
+
+        Ok(())
+    }
 }

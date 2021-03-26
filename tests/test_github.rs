@@ -2,8 +2,8 @@ use actix_web::{http, test, App};
 use async_trait::async_trait;
 use std::fs;
 use zian::{
-    github_pull_request_webhook, AppConfig, GitHubFile, GitHubPullRequestChecker,
-    GitHubPullRequestClient,
+    github_pull_request_webhook, AppConfig, DispatcherErr, DispatcherService,
+    GitHubPullRequestWebhook,
 };
 
 use hmac::{Hmac, Mac, NewMac};
@@ -11,15 +11,15 @@ use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
 
-struct TestGitHubClient;
+struct TestDispatcher {}
 
 #[async_trait]
-impl GitHubPullRequestClient for TestGitHubClient {
-    async fn files(&self, _url: &str) -> Result<Vec<GitHubFile>, Box<dyn std::error::Error>> {
-        Ok(vec![GitHubFile {
-            filename: "test.yml".to_string(),
-            status: "modified".to_string(),
-        }])
+impl DispatcherService for TestDispatcher {
+    async fn dispatch_pull_request(
+        &self,
+        _webhook: &GitHubPullRequestWebhook,
+    ) -> Result<(), DispatcherErr> {
+        Ok(())
     }
 }
 
@@ -50,9 +50,7 @@ async fn test_ok() {
         App::new()
             .data(AppConfig {
                 github_secret: "test-secret".to_string(),
-                pr_checker: Box::new(GitHubPullRequestChecker {
-                    github_client: Box::new(TestGitHubClient {}),
-                }),
+                dispatcher: Box::new(TestDispatcher {}),
             })
             .service(github_pull_request_webhook),
     )
@@ -70,10 +68,9 @@ async fn test_no_secret() {
         App::new()
             .data(AppConfig {
                 github_secret: "test-secret".to_string(),
-                pr_checker: Box::new(GitHubPullRequestChecker {
-                    github_client: Box::new(TestGitHubClient {}),
-                }),
+                dispatcher: Box::new(TestDispatcher {}),
             })
+            .data(Box::new(TestDispatcher {}))
             .service(github_pull_request_webhook),
     )
     .await;
@@ -95,9 +92,7 @@ async fn test_incorrect_secret() {
         App::new()
             .data(AppConfig {
                 github_secret: "test-secret".to_string(),
-                pr_checker: Box::new(GitHubPullRequestChecker {
-                    github_client: Box::new(TestGitHubClient {}),
-                }),
+                dispatcher: Box::new(TestDispatcher {}),
             })
             .service(github_pull_request_webhook),
     )
@@ -126,9 +121,7 @@ async fn test_no_payload() {
         App::new()
             .data(AppConfig {
                 github_secret: "test-secret".to_string(),
-                pr_checker: Box::new(GitHubPullRequestChecker {
-                    github_client: Box::new(TestGitHubClient {}),
-                }),
+                dispatcher: Box::new(TestDispatcher {}),
             })
             .service(github_pull_request_webhook),
     )
@@ -142,14 +135,15 @@ async fn test_no_payload() {
 
 #[actix_rt::test]
 async fn test_bad_file() {
-    struct TestGitHubClientBad;
+    struct TestDispatcherBadFile {}
+
     #[async_trait]
-    impl GitHubPullRequestClient for TestGitHubClientBad {
-        async fn files(&self, _url: &str) -> Result<Vec<GitHubFile>, Box<dyn std::error::Error>> {
-            Ok(vec![GitHubFile {
-                filename: ".build.yml".to_string(),
-                status: "modified".to_string(),
-            }])
+    impl DispatcherService for TestDispatcherBadFile {
+        async fn dispatch_pull_request(
+            &self,
+            _webhook: &GitHubPullRequestWebhook,
+        ) -> Result<(), DispatcherErr> {
+            Err(DispatcherErr::NotSafe)
         }
     }
 
@@ -157,9 +151,7 @@ async fn test_bad_file() {
         App::new()
             .data(AppConfig {
                 github_secret: "test-secret".to_string(),
-                pr_checker: Box::new(GitHubPullRequestChecker {
-                    github_client: Box::new(TestGitHubClientBad {}),
-                }),
+                dispatcher: Box::new(TestDispatcherBadFile {}),
             })
             .service(github_pull_request_webhook),
     )

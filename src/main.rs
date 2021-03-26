@@ -16,8 +16,9 @@
 /// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 ///
 use actix_web::{App, HttpServer};
+use zian::services::srchut::ISrcHutClient;
 use zian::{
-    github_pull_request_webhook, hello_world, AppConfig, GitHubPullRequestChecker,
+    github_pull_request_webhook, hello_world, AppConfig, IDispatcherService,
     IGitHubPullRequestClient,
 };
 
@@ -47,12 +48,19 @@ async fn main() -> std::io::Result<()> {
     //    - GITHUB_HEAD_REPO
     // 7. Set source to PR branch
     // 8. Submit build to builds.sr.ht using personal access token (temporary measure.)
+
     HttpServer::new(|| {
+        let github_client = Box::new(IGitHubPullRequestClient {});
+        let srchut_client = Box::new(ISrcHutClient {
+            access_token: "example-secret".to_string(),
+        });
+
         App::new()
             .data(AppConfig {
                 github_secret: "example-secret".to_string(),
-                pr_checker: Box::new(GitHubPullRequestChecker {
-                    github_client: Box::new(IGitHubPullRequestClient {}),
+                dispatcher: Box::new(IDispatcherService {
+                    github_client,
+                    srchut_client,
                 }),
             })
             .service(hello_world)
