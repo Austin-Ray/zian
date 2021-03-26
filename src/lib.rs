@@ -30,6 +30,7 @@ use thiserror::Error;
 pub struct GitHubRepo {
     /// Full name of a repository e.g. Austin-Ray/zian
     pub full_name: String,
+    pub private: bool,
 }
 
 /// Webhook's `pull_request.head` or `pull_request.base` field.
@@ -184,7 +185,11 @@ pub async fn github_pull_request_webhook(
         return HttpResponse::Forbidden().body("Invalid signature.");
     }
 
-    if let Err(e) = config.dispatcher.dispatch_pull_request(&payload).await {
+    if let Err(e) = config
+        .dispatcher
+        .dispatch_pull_request(&payload, &raw_payload, headers)
+        .await
+    {
         return match e {
             DispatcherErr::NotSafe => HttpResponse::Forbidden().body(format!("{}", e)),
             DispatcherErr::Unrecoverable => HttpResponse::InternalServerError().finish(),
@@ -197,6 +202,18 @@ pub async fn github_pull_request_webhook(
 #[get("/")]
 async fn hello_world() -> impl Responder {
     "hello, world!"
+}
+
+async fn is_safe_pull_request(
+    github_client: &(dyn GitHubPullRequestClient + Send + Sync),
+    url: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    // Found a forbidden file.
+    Ok(github_client
+        .files(url)
+        .await?
+        .iter()
+        .any(|x| !is_safe_file(&x.filename)))
 }
 
 #[derive(Error, Debug)]
@@ -212,6 +229,8 @@ pub trait DispatcherService {
     async fn dispatch_pull_request(
         &self,
         webhook: &GitHubPullRequestWebhook,
+        raw_webhook: &str,
+        headers: &actix_web::http::header::HeaderMap,
     ) -> Result<(), DispatcherErr>;
 }
 
@@ -220,28 +239,18 @@ pub struct IDispatcherService {
     pub srchut_client: Box<dyn SrcHutClient + Send + Sync>,
 }
 
-impl IDispatcherService {
-    async fn is_safe_pull_request(&self, url: &str) -> Result<bool, Box<dyn std::error::Error>> {
-        // Found a forbidden file.
-        Ok(self
-            .github_client
-            .files(url)
-            .await?
-            .iter()
-            .any(|x| !is_safe_file(&x.filename)))
-    }
-}
-
 #[async_trait]
 impl DispatcherService for IDispatcherService {
     async fn dispatch_pull_request(
         &self,
         webhook: &GitHubPullRequestWebhook,
+        _raw_payload: &str,
+        _headers: &actix_web::http::header::HeaderMap,
     ) -> Result<(), DispatcherErr> {
+        let ghc = &self.github_client;
         let shc = &self.srchut_client;
 
-        let is_safe: bool = self
-            .is_safe_pull_request(&webhook.pull_request.url)
+        let is_safe: bool = is_safe_pull_request(ghc.as_ref(), &webhook.pull_request.url)
             .await
             .map_err(|_| DispatcherErr::Unrecoverable)?;
 
@@ -260,6 +269,60 @@ impl DispatcherService for IDispatcherService {
         shc.submit_builds(&build_files_content)
             .await
             .map_err(|_| DispatcherErr::Unrecoverable)?;
+
+        Ok(())
+    }
+}
+
+pub struct ShimDispatcherService {
+    srchut_endpoint: String,
+    github_client: Box<dyn GitHubPullRequestClient + Send + Sync>,
+}
+
+#[async_trait]
+impl DispatcherService for ShimDispatcherService {
+    async fn dispatch_pull_request(
+        &self,
+        webhook: &GitHubPullRequestWebhook,
+        raw_payload: &str,
+        headers: &actix_web::http::header::HeaderMap,
+    ) -> Result<(), DispatcherErr> {
+        let ghc = &self.github_client;
+        let is_safe: bool = is_safe_pull_request(ghc.as_ref(), &webhook.pull_request.url)
+            .await
+            .map_err(|_| DispatcherErr::Unrecoverable)?;
+
+        if !is_safe {
+            return Err(DispatcherErr::NotSafe);
+        }
+
+        let mut v: serde_json::Value =
+            serde_json::from_str(raw_payload).map_err(|_| DispatcherErr::Unrecoverable)?;
+
+        // Lie to SourceHut
+        v["pull_request"]["base"]["repo"]["private"] = serde_json::json!(true);
+
+        let resp = reqwest::Client::new()
+            .post(&self.srchut_endpoint)
+            .header(
+                "X-GitHub-Event",
+                headers
+                    .get("X-GitHub-Event")
+                    .ok_or(DispatcherErr::Unrecoverable)?,
+            )
+            .header(
+                "X-GitHub-Delivery",
+                headers
+                    .get("X-GitHub-Delivery")
+                    .ok_or(DispatcherErr::Unrecoverable)?,
+            )
+            .json(&v)
+            .send()
+            .await;
+
+        if resp.is_err() {
+            return Err(DispatcherErr::Unrecoverable);
+        }
 
         Ok(())
     }

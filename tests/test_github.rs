@@ -18,6 +18,8 @@ impl DispatcherService for TestDispatcher {
     async fn dispatch_pull_request(
         &self,
         _webhook: &GitHubPullRequestWebhook,
+        _raw_webhook: &str,
+        _headers: &actix_web::http::header::HeaderMap,
     ) -> Result<(), DispatcherErr> {
         Ok(())
     }
@@ -142,6 +144,8 @@ async fn test_bad_file() {
         async fn dispatch_pull_request(
             &self,
             _webhook: &GitHubPullRequestWebhook,
+            _raw_webhook: &str,
+            _headers: &actix_web::http::header::HeaderMap,
         ) -> Result<(), DispatcherErr> {
             Err(DispatcherErr::NotSafe)
         }
