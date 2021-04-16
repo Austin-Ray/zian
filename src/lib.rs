@@ -275,8 +275,8 @@ impl DispatcherService for IDispatcherService {
 }
 
 pub struct ShimDispatcherService {
-    srchut_endpoint: String,
-    github_client: Box<dyn GitHubPullRequestClient + Send + Sync>,
+    pub srchut_endpoint: String,
+    pub github_client: Box<dyn GitHubPullRequestClient + Send + Sync>,
 }
 
 #[async_trait]

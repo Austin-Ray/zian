@@ -16,11 +16,78 @@
 /// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 ///
 use actix_web::{App, HttpServer};
+use structopt::StructOpt;
+use thiserror::Error;
 use zian::services::srchut::ISrcHutClient;
 use zian::{
-    github_pull_request_webhook, hello_world, AppConfig, IDispatcherService,
-    IGitHubPullRequestClient,
+    github_pull_request_webhook, hello_world, AppConfig, DispatcherService, IDispatcherService,
+    IGitHubPullRequestClient, ShimDispatcherService,
 };
+
+#[derive(StructOpt)]
+struct Opt {
+    #[structopt(long = "github-secret", env = "GITHUB_SECRET", hide_env_values = true)]
+    github_secret: String,
+
+    #[structopt(short, long, default_value = "8080")]
+    port: u16,
+
+    #[structopt(short, long)]
+    shim: bool,
+
+    #[structopt(
+        long = "sourcehut-webhook",
+        required_if("shim", "true"),
+        env = "SOURCEHUT_WEBHOOK",
+        hide_env_values = true
+    )]
+    srchut_webhook: Option<String>,
+
+    #[structopt(
+        long = "sourcehut-secret",
+        required_if("shim", "false"),
+        env = "SOURCEHUT_SECRET",
+        hide_env_values = true
+    )]
+    srchut_secret: Option<String>,
+}
+
+#[derive(Error, Debug)]
+pub enum DispatcherErr {
+    #[error("No sourcehut endpoint found in shim mode.")]
+    NoSrcHutEndpoint,
+    #[error("No sourcehut secret found.")]
+    NoSrcSecret,
+}
+
+fn create_dispatcher(
+    shim: bool,
+    srchut_secret: &Option<String>,
+    srchut_webhook: &Option<String>,
+) -> Result<Box<dyn DispatcherService>, DispatcherErr> {
+    let github_client = Box::new(IGitHubPullRequestClient {});
+    if shim {
+        match srchut_webhook {
+            Some(webhook_url) => Ok(Box::new(ShimDispatcherService {
+                github_client,
+                srchut_endpoint: webhook_url.to_string(),
+            })),
+            None => Err(DispatcherErr::NoSrcHutEndpoint),
+        }
+    } else {
+        let srchut_client = match &srchut_secret {
+            Some(secret) => Ok(Box::new(ISrcHutClient {
+                access_token: format!("{}", secret),
+            })),
+            None => Err(DispatcherErr::NoSrcSecret),
+        }?;
+
+        Ok(Box::new(IDispatcherService {
+            github_client,
+            srchut_client,
+        }))
+    }
+}
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -49,24 +116,22 @@ async fn main() -> std::io::Result<()> {
     // 7. Set source to PR branch
     // 8. Submit build to builds.sr.ht using personal access token (temporary measure.)
 
-    HttpServer::new(|| {
-        let github_client = Box::new(IGitHubPullRequestClient {});
-        let srchut_client = Box::new(ISrcHutClient {
-            access_token: "example-secret".to_string(),
-        });
+    let opt = Opt::from_args();
+    let gh_secret = opt.github_secret;
+    let shim_mode = opt.shim;
+    let srchut_secret = opt.srchut_secret;
+    let srchut_endpoint = opt.srchut_webhook;
 
+    HttpServer::new(move || {
         App::new()
             .data(AppConfig {
-                github_secret: "example-secret".to_string(),
-                dispatcher: Box::new(IDispatcherService {
-                    github_client,
-                    srchut_client,
-                }),
+                github_secret: gh_secret.to_string(),
+                dispatcher: create_dispatcher(shim_mode, &srchut_secret, &srchut_endpoint).unwrap(),
             })
             .service(hello_world)
             .service(github_pull_request_webhook)
     })
-    .bind("127.0.0.1:8080")?
+    .bind(format!("127.0.0.1:{}", opt.port))?
     .run()
     .await
 }
