@@ -26,6 +26,7 @@ use zian::{
 
 #[derive(StructOpt)]
 struct Opt {
+    /// Disable webhook signature verification.
     #[structopt(long)]
     insecure: bool,
 
