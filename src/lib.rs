@@ -80,8 +80,9 @@ pub struct GitHubFile {
 
 /// Configuration of Application.
 pub struct AppConfig {
+    pub insecure: bool,
     /// Webhook secret in GitHub.
-    pub github_secret: String,
+    pub github_secret: Option<String>,
     pub dispatcher: Box<dyn DispatcherService>,
 }
 
@@ -106,7 +107,7 @@ impl GitHubPullRequestClient for IGitHubPullRequestClient {
     }
 }
 
-fn verify_signature_sha256(
+async fn verify_signature_sha256(
     secret: &str,
     payload: &str,
     signature: &str,
@@ -164,25 +165,27 @@ pub async fn github_pull_request_webhook(
         Err(_) => return HttpResponse::BadRequest().finish(),
     };
 
-    let sig_header = match headers.get("X-HUB-SIGNATURE-256") {
-        Some(header) => match header.to_str() {
-            Ok(sig) => sig,
+    if !config.insecure {
+        let sig_header = match headers.get("X-HUB-SIGNATURE-256") {
+            Some(header) => match header.to_str() {
+                Ok(sig) => sig,
+                Err(_) => return HttpResponse::InternalServerError().finish(),
+            },
+            None => return HttpResponse::Forbidden().body("No signature provided."),
+        };
+
+        let (_, sig) = sig_header.split_at("sha256=".len());
+
+        let secret = &config.github_secret.as_ref();
+
+        let valid_sig = match verify_signature_sha256(&secret.unwrap(), &raw_payload, &sig).await {
+            Ok(result) => result,
             Err(_) => return HttpResponse::InternalServerError().finish(),
-        },
-        None => return HttpResponse::Forbidden().body("No signature provided."),
-    };
+        };
 
-    let (_, sig) = sig_header.split_at("sha256=".len());
-
-    let secret = &config.github_secret;
-
-    let valid_sig = match verify_signature_sha256(&secret, &raw_payload, &sig) {
-        Ok(result) => result,
-        Err(_) => return HttpResponse::InternalServerError().finish(),
-    };
-
-    if !valid_sig {
-        return HttpResponse::Forbidden().body("Invalid signature.");
+        if !valid_sig {
+            return HttpResponse::Forbidden().body("Invalid signature.");
+        }
     }
 
     if let Err(e) = config

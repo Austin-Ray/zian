@@ -51,7 +51,8 @@ async fn test_ok() {
     let mut app = test::init_service(
         App::new()
             .data(AppConfig {
-                github_secret: "test-secret".to_string(),
+                insecure: false,
+                github_secret: Some("test-secret".to_string()),
                 dispatcher: Box::new(TestDispatcher {}),
             })
             .service(github_pull_request_webhook),
@@ -69,7 +70,8 @@ async fn test_no_secret() {
     let mut app = test::init_service(
         App::new()
             .data(AppConfig {
-                github_secret: "test-secret".to_string(),
+                insecure: false,
+                github_secret: Some("test-secret".to_string()),
                 dispatcher: Box::new(TestDispatcher {}),
             })
             .data(Box::new(TestDispatcher {}))
@@ -93,7 +95,8 @@ async fn test_incorrect_secret() {
     let mut app = test::init_service(
         App::new()
             .data(AppConfig {
-                github_secret: "test-secret".to_string(),
+                insecure: false,
+                github_secret: Some("test-secret".to_string()),
                 dispatcher: Box::new(TestDispatcher {}),
             })
             .service(github_pull_request_webhook),
@@ -122,7 +125,8 @@ async fn test_no_payload() {
     let mut app = test::init_service(
         App::new()
             .data(AppConfig {
-                github_secret: "test-secret".to_string(),
+                insecure: false,
+                github_secret: Some("test-secret".to_string()),
                 dispatcher: Box::new(TestDispatcher {}),
             })
             .service(github_pull_request_webhook),
@@ -154,7 +158,8 @@ async fn test_bad_file() {
     let mut app = test::init_service(
         App::new()
             .data(AppConfig {
-                github_secret: "test-secret".to_string(),
+                insecure: false,
+                github_secret: Some("test-secret".to_string()),
                 dispatcher: Box::new(TestDispatcherBadFile {}),
             })
             .service(github_pull_request_webhook),

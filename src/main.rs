@@ -26,8 +26,16 @@ use zian::{
 
 #[derive(StructOpt)]
 struct Opt {
-    #[structopt(long = "github-secret", env = "GITHUB_SECRET", hide_env_values = true)]
-    github_secret: String,
+    #[structopt(long)]
+    insecure: bool,
+
+    #[structopt(
+        long = "github-secret",
+        env = "GITHUB_SECRET",
+        hide_env_values = true,
+        required_if("insecure", "false")
+    )]
+    github_secret: Option<String>,
 
     #[structopt(short, long, default_value = "8080")]
     port: u16,
@@ -117,6 +125,7 @@ async fn main() -> std::io::Result<()> {
     // 8. Submit build to builds.sr.ht using personal access token (temporary measure.)
 
     let opt = Opt::from_args();
+    let insecure = opt.insecure;
     let gh_secret = opt.github_secret;
     let shim_mode = opt.shim;
     let srchut_secret = opt.srchut_secret;
@@ -125,7 +134,8 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .data(AppConfig {
-                github_secret: gh_secret.to_string(),
+                insecure,
+                github_secret: gh_secret.clone(),
                 dispatcher: create_dispatcher(shim_mode, &srchut_secret, &srchut_endpoint).unwrap(),
             })
             .service(hello_world)
