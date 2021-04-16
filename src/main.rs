@@ -30,6 +30,8 @@ struct Opt {
     #[structopt(long)]
     insecure: bool,
 
+    /// Secret in the GitHub webhook configuration.
+    /// Required for webhook payload validation.
     #[structopt(
         long = "github-secret",
         env = "GITHUB_SECRET",
@@ -38,12 +40,15 @@ struct Opt {
     )]
     github_secret: Option<String>,
 
+    /// HTTP port to listen on
     #[structopt(short, long, default_value = "8080")]
     port: u16,
 
+    /// Intercept webhooks between GitHub and dispatch.sr.ht
     #[structopt(short, long)]
     shim: bool,
 
+    /// dispatch.sr.ht URL for forwarding webhooks in shim mode. Required for shim mode.
     #[structopt(
         long = "sourcehut-webhook",
         required_if("shim", "true"),
@@ -52,6 +57,7 @@ struct Opt {
     )]
     srchut_webhook: Option<String>,
 
+    /// Personal access token for SourceHut. Not required when shimming.
     #[structopt(
         long = "sourcehut-secret",
         required_if("shim", "false"),
