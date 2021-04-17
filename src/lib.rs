@@ -100,7 +100,7 @@ impl GitHubPullRequestClient for IGitHubPullRequestClient {
     /// Retrieve list of files at a given pull request [url]
     async fn files(&self, url: &str) -> Result<Vec<GitHubFile>, Box<dyn std::error::Error>> {
         let files_url = format!("{}/files", url);
-        Ok(reqwest::get(files_url)
+        Ok(reqwest::get(&files_url)
             .await?
             .json::<Vec<GitHubFile>>()
             .await?)
@@ -143,7 +143,7 @@ async fn grab_build_file_content(
         repo_name, build_file, git_sha
     );
 
-    let content = reqwest::get(req_url)
+    let content = reqwest::get(&req_url)
         .await?
         .json::<GitHubRepoFile>()
         .await?;
@@ -277,6 +277,18 @@ impl DispatcherService for IDispatcherService {
     }
 }
 
+fn actix_headers_to_reqwest_header(
+    headers: &actix_web::http::header::HeaderMap,
+) -> reqwest::header::HeaderMap {
+    let mut new_headers = reqwest::header::HeaderMap::new();
+
+    for header in headers.iter() {
+        new_headers.insert(header.0, header.1.to_owned());
+    }
+
+    new_headers
+}
+
 pub struct ShimDispatcherService {
     pub srchut_endpoint: String,
     pub github_client: Box<dyn GitHubPullRequestClient + Send + Sync>,
@@ -291,11 +303,13 @@ impl DispatcherService for ShimDispatcherService {
         headers: &actix_web::http::header::HeaderMap,
     ) -> Result<(), DispatcherErr> {
         let ghc = &self.github_client;
-        let is_safe: bool = is_safe_pull_request(ghc.as_ref(), &webhook.pull_request.url)
-            .await
-            .map_err(|_| DispatcherErr::Unrecoverable)?;
+        let is_safe = true;
+        //let is_safe: bool = is_safe_pull_request(ghc.as_ref(), &webhook.pull_request.url)
+        //    .await
+        //    .map_err(|_| DispatcherErr::Unrecoverable)?;
 
         if !is_safe {
+            println!("Unsafe PR");
             return Err(DispatcherErr::NotSafe);
         }
 
@@ -305,25 +319,22 @@ impl DispatcherService for ShimDispatcherService {
         // Lie to SourceHut
         v["pull_request"]["base"]["repo"]["private"] = serde_json::json!(true);
 
-        let resp = reqwest::Client::new()
+        let req = reqwest::Client::new()
             .post(&self.srchut_endpoint)
-            .header(
-                "X-GitHub-Event",
-                headers
-                    .get("X-GitHub-Event")
-                    .ok_or(DispatcherErr::Unrecoverable)?,
-            )
-            .header(
-                "X-GitHub-Delivery",
-                headers
-                    .get("X-GitHub-Delivery")
-                    .ok_or(DispatcherErr::Unrecoverable)?,
-            )
+            .headers(actix_headers_to_reqwest_header(headers))
             .json(&v)
-            .send()
-            .await;
+            .build()
+            .unwrap();
+
+        println!("{:#?}", req);
+        println!(
+            "{:#?}",
+            String::from_utf8(req.body().unwrap().to_owned().as_bytes().unwrap().to_vec())
+        );
+        let resp = reqwest::Client::new().execute(req).await;
 
         if resp.is_err() {
+            println!("{:?}", resp.err().unwrap());
             return Err(DispatcherErr::Unrecoverable);
         }
 
